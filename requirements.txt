@@ -1,0 +1,9 @@
+pydantic~=2.13.4
+python-dotenv~=1.1.1
+bcrypt~=5.0.0
+fastapi~=0.141.1
+PyJWT~=2.13.0
+pymongo~=4.17.0
+phonenumbers~=9.0.36
+starlette~=1.6.0
+python-jose~=3.5.0
