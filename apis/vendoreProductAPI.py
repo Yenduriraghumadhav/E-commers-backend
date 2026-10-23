@@ -15,7 +15,7 @@ router = APIRouter()
 vendore_details = db["vendore_collection"]
 productDetails = db["product_details"]
 jwttoken_toaddProduct = db["VendoreJwtTokenFile"]
-
+vendorPerpose = db["TotalOrderDetailsForVendores"]
 
 
 @router.post("/vendore_products")
@@ -587,5 +587,145 @@ async def upload_vendore_productsExcel(vendorEmail: str,file: UploadFile = File(
         "errors": errors,
         "sellerID" : seller_id
     }
+
+
+
+
+
+@router.get("/vendoreOrdersRevenueData")
+async def vendoreOrdersRevenueData(email: str,vendor_access_token: str | None = Cookie(default=None)):
+
+    if not vendor_access_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="JWT token is not provided"
+        )
+
+    if not email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email is not provided"
+        )
+
+    try:
+        filteringTOKEN = jwttoken_toaddProduct.find_one({
+            "token": vendor_access_token
+        })
+
+        if not filteringTOKEN:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token expired. Please login again"
+            )
+
+        filteringEMails = vendore_details.find_one({
+            "vendore_email": email
+        })
+
+        if not filteringEMails:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Vendor email is not valid"
+            )
+
+        seller_id = filteringEMails.get("seller_id")
+
+        if not seller_id:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Seller ID not found"
+            )
+
+        vendor_orders = list(
+            vendorPerpose.find(
+                {"seller_id": seller_id},
+                {
+                    "_id": 0,
+                    "order_id": 1,
+                    "seller_id": 1,
+                    "productId": 1,
+                    "Quality": 1,
+                    "OrderPrice": 1,
+                    "CancelOrder": 1,
+                    "orderDate": 1,
+                }
+            )
+        )
+
+        total_orders = len({
+            order.get("order_id")
+            for order in vendor_orders
+            if order.get("order_id") is not None
+        })
+
+        total_ordered_products = 0
+        total_revenue = 0.0
+        total_quantity = 0
+        revenue_details = []
+
+        for order in vendor_orders:
+            cancel_status = str(
+                order.get("CancelOrder", "")
+            ).strip().lower()
+
+            if cancel_status == "cancelled":
+                continue
+
+            product_id = order.get("productId")
+            order_id = order.get("order_id")
+
+            try:
+                price = float(order.get("OrderPrice") or 0)
+                quantity = float(order.get("Quality") or 0)
+            except (ValueError, TypeError):
+                logger.warning(
+                    f"Invalid price or quantity for order {order_id}: "
+                    f"OrderPrice={order.get('OrderPrice')}, "
+                    f"Quality={order.get('Quality')}"
+                )
+                continue
+
+            if price <= 0 or quantity <= 0:
+                logger.warning(
+                    f"Invalid price/quantity for order {order_id}: "
+                    f"price={price}, quantity={quantity}"
+                )
+                continue
+
+            product_revenue = price * quantity
+            total_revenue += product_revenue
+            total_quantity += quantity
+            total_ordered_products += 1
+
+            revenue_details.append({
+                "order_id": order_id,
+                "productId": product_id,
+                "price": price,
+                "quantity": quantity,
+                "revenue": round(product_revenue, 2),
+            })
+
+        return {
+            "seller_id": seller_id,
+            "vendoreDetails": {
+                "total_orders": total_orders,
+                "total_ordered_products": total_ordered_products,
+                "total_quantity": total_quantity,
+                "total_revenue": round(total_revenue, 2),
+            },
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception:
+        logger.exception(
+            "Error calculating vendor orders revenue"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to calculate vendor revenue"
+        )
+
 
 

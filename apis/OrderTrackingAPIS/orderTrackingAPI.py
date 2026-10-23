@@ -1,7 +1,6 @@
 from fastapi import APIRouter, Cookie, status, HTTPException , BackgroundTasks
 from pydantic import BaseModel
-from datetime import datetime
-from typing import Optional
+from datetime import datetime, timezone
 from debaggingFile.loggerFile import logger
 from dataBase.dataBaseConnectivity import db
 from Email_utility.email_utils import (send_cancellation_email, send_cancellation_emails)
@@ -14,6 +13,8 @@ vendore_collection = db["vendore_collection"]
 jwttoken_toaddProduct = db["VendoreJwtTokenFile"]
 users_collection = db["usersDetails"]
 odersList = db["UsersOrdersDeatils"]
+deletedTrackingOrders = db["CancelOdersTrakingData"]
+vendorPerpose = db["TotalOrderDetailsForVendores"]
 
 
 @router.get("/trakingUserOrder")
@@ -98,42 +99,38 @@ class gettingDeleteRequiredThings(BaseModel):
     productId : str
     orderId : str
 
+
+
 @router.delete("/DeletingtrakingOrders")
-async def UserDeletingOrder(data: gettingDeleteRequiredThings,background_tasks: BackgroundTasks,email: str, jwt_Token: str = Cookie(default=None),):
+async def UserDeletingOrder( data: gettingDeleteRequiredThings, background_tasks: BackgroundTasks,email: str,jwt_Token: str = Cookie(default=None),):
 
     if not jwt_Token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="token not provided",
+            detail="Token not provided",
         )
 
-    if not email:
+    if not email or not email.strip():
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email not provided",
         )
 
-    if not data:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="data not provided",
-        )
-
-    checkingUserJwtToken = user_JWTToken.find_one({"token" : jwt_Token})
+    checkingUserJwtToken = user_JWTToken.find_one({
+        "token": jwt_Token
+    })
 
     if not checkingUserJwtToken:
-        logger.error(
-            f"Jwt token was not found in DB"
-        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Jwt token not found",
+            detail="Invalid or expired token",
         )
 
     try:
         user_order = odersList.find_one({
             "order_id": data.orderId,
-            "productId": data.productId
+            "productId": data.productId,
+            "userEmail": email.strip(),
         })
 
         if not user_order:
@@ -143,34 +140,6 @@ async def UserDeletingOrder(data: gettingDeleteRequiredThings,background_tasks: 
             )
 
         user_email = user_order.get("userEmail")
-
-
-        product = productDetails.find_one({
-            "product_id": data.productId,
-        })
-
-        vendor_email = None
-        product_name = str(data.productId)
-
-        if product:
-            vendor_email = product.get("vendor_email")
-            product_name = product.get(
-                "product_name",
-                str(data.productId),
-            )
-
-            if vendor_email:
-                logger.info("Vendor email found")
-            else:
-                logger.warning(
-                    "Vendor email not found for product %s",
-                    data.productId,
-                )
-        else:
-            logger.warning(
-                "Product details not found for product %s",
-                data.productId,
-            )
 
         tracking_record = trakingOrders.find_one({
             "orderId": data.orderId,
@@ -183,23 +152,76 @@ async def UserDeletingOrder(data: gettingDeleteRequiredThings,background_tasks: 
                 detail="Tracking record not found",
             )
 
+        filteringordersdata = vendorPerpose.find_one({
+            "orderEmail" : email,
+            "order_id": data.orderId,
+            "productId": data.productId,
+        })
+
+        if filteringordersdata:
+            vendorPerpose.update_one(
+                {"_id": filteringordersdata["_id"]},
+                {"$set": {"CancelOrder": "cancelled"}}
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Vendor order record not found",
+            )
+
+        logger.info(
+            f"order cancel is enter in the vendoreperspose Db file | {filteringordersdata}"
+        )
+
+        product = productDetails.find_one({
+            "product_id": data.productId
+        })
+
+        if not product:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Product not found",
+            )
+
+        vendor_email = product.get("vendor_email")
+        product_name = product.get("product_name", "Unknown Product")
+        cancellation_record = tracking_record.copy()
+        cancellation_record["original_tracking_id"] = tracking_record["_id"]
+        cancellation_record.pop("_id", None)
+
+        cancellation_record["cancellation_details"] = {
+            "cancelled_by": user_email,
+            "cancelled_at": datetime.now(timezone.utc),
+            "order_id": data.orderId,
+            "product_id": data.productId,
+        }
+
+        cancelorder = deletedTrackingOrders.insert_one(
+            cancellation_record
+        )
+
+        logger.info(
+            "Cancellation record saved. ID: %s",
+            cancelorder.inserted_id,
+        )
+
         tracking_delete = trakingOrders.delete_one({
-            "_id": tracking_record["_id"],
+            "_id": tracking_record["_id"]
         })
 
         if tracking_delete.deleted_count != 1:
             raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Tracking record was not deleted",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Cancellation saved, but tracking deletion failed",
             )
 
         order_delete = odersList.delete_one({
-            "_id": user_order["_id"],
+            "_id": user_order["_id"]
         })
 
         if order_delete.deleted_count != 1:
             logger.error(
-                "Tracking record deleted, but order deletion failed. "
+                "Tracking deleted, but order deletion failed. "
                 "Order=%s Product=%s",
                 data.orderId,
                 data.productId,
@@ -207,50 +229,46 @@ async def UserDeletingOrder(data: gettingDeleteRequiredThings,background_tasks: 
 
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Order deletion failed; please contact support",
+                detail="Tracking deleted, but order deletion failed",
             )
 
-        if user_email:
+        if user_email and vendor_email:
             background_tasks.add_task(
                 send_cancellation_emails,
                 user_email,
-                vendor_email or "",
+                vendor_email,
                 str(data.orderId),
                 str(data.productId),
                 str(product_name),
             )
-
-            logger.info(
-                "Cancellation email task scheduled for order %s",
-                data.orderId,
-            )
+            email_status = "scheduled"
         else:
-            logger.warning(
-                "Order cancelled, but customer email is missing"
-            )
+            email_status = "not scheduled"
 
         return {
-            "message": "deleted successfully",
+            "status": "success",
+            "message": "Order cancelled successfully",
             "order": data.orderId,
             "product": data.productId,
-            "email_notifications": (
-                "scheduled" if user_email else "not scheduled"
-            ),
+            "cancellation_record_id": str(cancelorder.inserted_id),
+            "email_notifications": email_status,
         }
 
     except HTTPException:
         raise
-
     except Exception:
         logger.exception(
-            "Error deleting order %s, product %s",
+            "Error cancelling order %s, product %s",
             data.orderId,
             data.productId,
         )
+
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Something went wrong",
+            detail="Something went wrong while cancelling the order",
         )
+
+
 
 @router.get("/trakingVendoreOrder")
 async def VendoregetTrakingOrder(seller_id: str,role: str,vendor_access_token: str = Cookie(default=None)):

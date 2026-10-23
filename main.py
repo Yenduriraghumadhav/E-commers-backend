@@ -19,6 +19,7 @@ from apis.LogoutAPIS.userLogoutAPIS import router as logoutAPI
 from apis.userOrdersAPIS.userOrdersAPI import router as ordersAPI
 from apis.ProductsAPI import router as productsAPI
 from apis.OrderTrackingAPIS.orderTrackingAPI import router as orderTrackingAPI
+from apis.VendoreAPIS import router as vendoreAPI
 
 
 app = FastAPI()
@@ -60,5 +61,6 @@ app.include_router(logoutAPI)
 app.include_router(ordersAPI)
 app.include_router(productsAPI)
 app.include_router(orderTrackingAPI)
+app.include_router(vendoreAPI)
 
 

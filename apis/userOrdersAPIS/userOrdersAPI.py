@@ -171,6 +171,7 @@ async def usersordersget(data: oderListCreate, background_tasks: BackgroundTasks
                 "seller_id": seller_id,
                 "vendore_email": vendor_email,
                 "Trackorder": "NOT DELIVERED",
+                "CancelOrder" : "Not Cancelled"
             })
 
             logger.info(
@@ -205,6 +206,7 @@ async def usersordersget(data: oderListCreate, background_tasks: BackgroundTasks
                 "Shipped": False,
                 "Outfordelivery": False,
                 "Arriving": False,
+                "CancelOrder" : "Not Cancelled",
                 "ordercreatedTime": datetime.now(timezone.utc),
             }
 
@@ -229,14 +231,36 @@ async def usersordersget(data: oderListCreate, background_tasks: BackgroundTasks
                 ),
             )
 
-        # --- MOVED INSIDE THE LOOP BELOW ---
+        gettingPriceOftheProduct = productDetails.find_one({"product_id" : item.productId})
+
+        logger.info(
+            f"getting product price | {gettingPriceOftheProduct}"
+        )
+
+        if not gettingPriceOftheProduct:
+            logger.warning(
+                "can not get product price | %s",
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="something went wrong while getting product price",
+            )
+
+        productPrice = gettingPriceOftheProduct.get("product_price")
+
+        logger.info(
+            f"productprice is {productPrice}"
+        )
         try:
             objectOrderDta = {
+                "orderEmail" : userEmail,
                 "order_id": order_id,
                 "seller_id": seller_id,
                 "productId": item.productId,
                 "Quality": item.Quality,
-                "orderDate": datetime.now(timezone.utc)
+                "OrderPrice" : productPrice,
+                "CancelOrder" : "Not Cancelled",
+                "orderDate":  datetime.now(timezone.utc)
             }
 
             insertingOders = vendorPerpose.insert_one(objectOrderDta)
@@ -265,7 +289,6 @@ async def usersordersget(data: oderListCreate, background_tasks: BackgroundTasks
             "productCost": item.productCost,
         })
 
-        # Background task and return remain outside the loop
     background_tasks.add_task(
         send_order_emails_in_background,
         data.userEmail,
